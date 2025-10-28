@@ -48,7 +48,6 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
     let test_dataset = file.dataset("test")?;
     let test_data: Array2<f32> = test_dataset.read_2d()?;
     let (n_test, _) = test_data.dim();
-    let n_test = 1000;
     println!("Test vectors: {} x {}", n_test, dim);
 
     // Read ground truth neighbors
@@ -160,7 +159,7 @@ impl Index {
             return;
         }
 
-        let clusters = k_means(vectors, self.cluster_count, distance_metric);
+        let clusters = k_means(vectors, self.cluster_count, 100, distance_metric);
         self.inner = clusters;
     }
 
@@ -169,7 +168,12 @@ impl Index {
     }
 }
 
-fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vector, Vec<Vector>)> {
+fn k_means(
+    vectors: &[Vector],
+    k: usize,
+    iterations: usize,
+    distance_metric: &Distance,
+) -> Vec<(Vector, Vec<Vector>)> {
     assert_ne!(k, 0);
 
     // Initialize K centroids randomly
@@ -183,7 +187,7 @@ fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vec
     let mut centroids_changed = true;
     let mut iter = 0;
 
-    while centroids_changed && iter < 50 {
+    while centroids_changed && iter < iterations {
         println!("Building index, iter: {iter}");
 
         centroids_changed = false;
@@ -374,7 +378,7 @@ impl DB {
 
         // Search within top 10 clusters
         let mut candidates = Vec::new();
-        for &(c_idx, _dist) in cluster_distances.iter().take(5) {
+        for &(c_idx, _dist) in cluster_distances.iter().take(3) {
             let (_, vectors) = &clusters[c_idx];
             for v in vectors {
                 let dist = self.distance_metric.compute(vector, v);
