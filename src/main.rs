@@ -48,6 +48,7 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
     let test_dataset = file.dataset("test")?;
     let test_data: Array2<f32> = test_dataset.read_2d()?;
     let (n_test, _) = test_data.dim();
+    let n_test = 1000;
     println!("Test vectors: {} x {}", n_test, dim);
 
     // Read ground truth neighbors
@@ -182,7 +183,9 @@ fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vec
     let mut centroids_changed = true;
     let mut iter = 0;
 
-    while centroids_changed && iter < 100 {
+    while centroids_changed && iter < 50 {
+        println!("Building index, iter: {iter}");
+
         centroids_changed = false;
         iter += 1;
 
@@ -193,6 +196,7 @@ fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vec
 
             // Compute distance with every centroid
             for (cluster_id, centroid) in centroids.iter().enumerate() {
+                assert!(matches!(distance_metric, Distance::Euclidean));
                 let dist = distance_metric.compute(vector, centroid);
                 if dist < min_dist {
                     min_dist = dist;
@@ -211,9 +215,18 @@ fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vec
         // Update centroids using the vector-cluster assignment
         for (cluster_id, centroid) in centroids.iter_mut().enumerate() {
             // Find all vectors belonging to cluster_id
-            let cluster_vectors_idx = vector_to_cluster_map.iter().filter(|id| **id == cluster_id);
-            let cluster_vectors: Vec<&Vector> =
-                cluster_vectors_idx.map(|idx| &vectors[*idx]).collect();
+
+            let mut cluster_vectors_idx = Vec::new();
+            for (idx, id) in vector_to_cluster_map.iter().enumerate() {
+                if *id == cluster_id {
+                    cluster_vectors_idx.push(idx);
+                }
+            }
+
+            let cluster_vectors: Vec<&Vector> = cluster_vectors_idx
+                .into_iter()
+                .map(|idx| &vectors[idx])
+                .collect();
 
             // compute centroid
             let mut new_centroid = vec![0.0; vectors[0].len()];
@@ -241,9 +254,16 @@ fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vec
     let mut clusters: Vec<(Vector, Vec<Vector>)> = Vec::new();
     for (cluster_id, centroid) in centroids.into_iter().enumerate() {
         // Find all vectors belonging to cluster_id
-        let cluster_vectors_idx = vector_to_cluster_map.iter().filter(|id| **id == cluster_id);
+        let mut cluster_vectors_idx = Vec::new();
+        for (idx, id) in vector_to_cluster_map.iter().enumerate() {
+            if *id == cluster_id {
+                cluster_vectors_idx.push(idx);
+            }
+        }
+
         let cluster_vectors: Vec<Vector> = cluster_vectors_idx
-            .map(|idx| vectors[*idx].to_owned())
+            .into_iter()
+            .map(|idx| vectors[idx].to_owned())
             .collect();
 
         clusters.push((centroid, cluster_vectors))
@@ -313,11 +333,13 @@ impl DB {
     }
 
     fn build_index(&mut self) {
-        if self.inner.len() < (self.index.cluster_count * 1000) {
+        if self.inner.len() < (self.index.cluster_count * 256) {
             println!(
                 "Not enough vectors ({}), skipping index building",
                 self.inner.len()
             );
+
+            return;
         }
 
         self.index.update(&self.inner, &self.distance_metric);
@@ -352,7 +374,7 @@ impl DB {
 
         // Search within top 10 clusters
         let mut candidates = Vec::new();
-        for &(c_idx, _dist) in cluster_distances.iter().take(10) {
+        for &(c_idx, _dist) in cluster_distances.iter().take(5) {
             let (_, vectors) = &clusters[c_idx];
             for v in vectors {
                 let dist = self.distance_metric.compute(vector, v);
