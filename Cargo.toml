@@ -8,3 +8,4 @@ hdf5 = { package = "hdf5-metno", version = "0.10" }
 anyhow = "1"
 ndarray = "0.16"
 reqwest = { version = "0.12", features = ["blocking"] }
+rand = "0.9"

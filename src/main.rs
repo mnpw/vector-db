@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Error;
+use rand::seq::IndexedRandom;
 
 fn main() {
     println!("Fashion-MNIST Benchmark");
@@ -64,7 +65,15 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
         let vector: Vec<f64> = train_data.row(i).iter().map(|&x| x as f64).collect();
         db.insert(vector);
     }
-    println!("Inserted {} vectors into database\n", n_train);
+    println!("Inserted {} vectors into database", n_train);
+
+    // Build the IVF index
+    println!(
+        "Building IVF index with {} clusters...",
+        db.index.cluster_count
+    );
+    db.build_index();
+    println!("Index built!\n");
 
     // Run queries and calculate metrics
     println!("Running benchmark queries...");
@@ -131,12 +140,126 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
 
 type Vector = Vec<f64>;
 
+// Inverted File Index
+struct Index {
+    inner: Vec<(Vector, Vec<Vector>)>,
+    cluster_count: usize,
+}
+
+impl Index {
+    fn new(k: usize) -> Self {
+        Self {
+            inner: Vec::with_capacity(k),
+            cluster_count: k,
+        }
+    }
+
+    fn update(&mut self, vectors: &[Vector], distance_metric: &Distance) {
+        if vectors.is_empty() {
+            return;
+        }
+
+        let clusters = k_means(vectors, self.cluster_count, distance_metric);
+        self.inner = clusters;
+    }
+
+    fn get_clusters(&self) -> &Vec<(Vector, Vec<Vector>)> {
+        &self.inner
+    }
+}
+
+fn k_means(vectors: &[Vector], k: usize, distance_metric: &Distance) -> Vec<(Vector, Vec<Vector>)> {
+    assert_ne!(k, 0);
+
+    // Initialize K centroids randomly
+    let mut centroids: Vec<Vector> = vectors
+        .choose_multiple(&mut rand::rng(), k)
+        .cloned()
+        .collect();
+
+    let mut vector_to_cluster_map: Vec<usize> = vec![0; vectors.len()];
+
+    let mut centroids_changed = true;
+    let mut iter = 0;
+
+    while centroids_changed && iter < 100 {
+        centroids_changed = false;
+        iter += 1;
+
+        // Assign vectors to closest centroid
+        for (vector_id, vector) in vectors.iter().enumerate() {
+            let mut min_dist = f64::INFINITY;
+            let mut best_cluster = 0;
+
+            // Compute distance with every centroid
+            for (cluster_id, centroid) in centroids.iter().enumerate() {
+                let dist = distance_metric.compute(vector, centroid);
+                if dist < min_dist {
+                    min_dist = dist;
+                    best_cluster = cluster_id;
+                }
+            }
+
+            // Update vector's centroid
+            if vector_to_cluster_map[vector_id] != best_cluster {
+                // Found a different centroid for ith vector
+                vector_to_cluster_map[vector_id] = best_cluster;
+                centroids_changed = true;
+            }
+        }
+
+        // Update centroids using the vector-cluster assignment
+        for (cluster_id, centroid) in centroids.iter_mut().enumerate() {
+            // Find all vectors belonging to cluster_id
+            let cluster_vectors_idx = vector_to_cluster_map.iter().filter(|id| **id == cluster_id);
+            let cluster_vectors: Vec<&Vector> =
+                cluster_vectors_idx.map(|idx| &vectors[*idx]).collect();
+
+            // compute centroid
+            let mut new_centroid = vec![0.0; vectors[0].len()];
+            let cluster_size = cluster_vectors.len();
+            if cluster_size > 0 {
+                new_centroid = cluster_vectors
+                    .iter()
+                    // sum every coordinate of cluster vectors
+                    .fold(new_centroid, |c, v| {
+                        c.iter()
+                            .zip(v.iter())
+                            .map(|(left, right)| left + right)
+                            .collect()
+                    })
+                    .iter()
+                    // divide every coordinate by cluster size
+                    .map(|v_i| *v_i / cluster_size as f64)
+                    .collect();
+
+                *centroid = new_centroid;
+            }
+        }
+    }
+
+    let mut clusters: Vec<(Vector, Vec<Vector>)> = Vec::new();
+    for (cluster_id, centroid) in centroids.into_iter().enumerate() {
+        // Find all vectors belonging to cluster_id
+        let cluster_vectors_idx = vector_to_cluster_map.iter().filter(|id| **id == cluster_id);
+        let cluster_vectors: Vec<Vector> = cluster_vectors_idx
+            .map(|idx| vectors[*idx].to_owned())
+            .collect();
+
+        clusters.push((centroid, cluster_vectors))
+    }
+
+    clusters
+}
+
 struct DB {
     pub inner: Vec<Vector>,
+    index: Index,
     dim: usize,
     distance_metric: Distance,
 }
 
+#[derive(Clone)]
 enum Distance {
     Dot,
     Euclidean,
@@ -183,9 +306,21 @@ impl DB {
     fn new(dimension: usize, distance_metric: Distance) -> Self {
         Self {
             inner: vec![],
+            index: Index::new(32),
             dim: dimension,
             distance_metric,
         }
+    }
+
+    fn build_index(&mut self) {
+        if self.inner.len() < (self.index.cluster_count * 1000) {
+            println!(
+                "Not enough vectors ({}), skipping index building",
+                self.inner.len()
+            );
+        }
+
+        self.index.update(&self.inner, &self.distance_metric);
     }
 
     fn insert(&mut self, vector: Vector) {
@@ -195,29 +330,67 @@ impl DB {
 
     fn search(&self, vector: &Vector, count: usize) -> Vec<&Vector> {
         assert_eq!(vector.len(), self.dim);
-        let mut distances = Vec::with_capacity(self.inner.len());
 
-        // 1. compute distance with every vector in self.inner
-        for (id, v) in self.inner.iter().enumerate() {
-            let dist = self.distance_metric.compute(v, vector);
-            distances.push((id, dist));
+        let clusters = self.index.get_clusters();
+        if clusters.is_empty() {
+            // Fallback to linear search if no index
+            println!("falling back to linear search");
+            return self.linear_search(vector, count);
         }
 
-        // 2. sort distances
+        // Find top clusters by centroid distance
+        let mut cluster_distances: Vec<(usize, f64)> = clusters
+            .iter()
+            .enumerate()
+            .map(|(c_idx, (centroid, _))| (c_idx, self.distance_metric.compute(centroid, vector)))
+            .collect();
+
         match self.distance_metric {
-            // Euclidean distanace = small => closer
+            Distance::Euclidean => cluster_distances.sort_by(|a, b| a.1.total_cmp(&b.1)),
+            Distance::Dot => cluster_distances.sort_by(|a, b| b.1.total_cmp(&a.1)),
+        }
+
+        // Search within top 10 clusters
+        let mut candidates = Vec::new();
+        for &(c_idx, _dist) in cluster_distances.iter().take(10) {
+            let (_, vectors) = &clusters[c_idx];
+            for v in vectors {
+                let dist = self.distance_metric.compute(vector, v);
+                candidates.push((v, dist));
+            }
+        }
+
+        // Sort candidates
+        match self.distance_metric {
+            Distance::Euclidean => candidates.sort_by(|a, b| a.1.total_cmp(&b.1)),
+            Distance::Dot => candidates.sort_by(|a, b| b.1.total_cmp(&a.1)),
+        }
+
+        let mut top = Vec::with_capacity(count);
+        for (v, _) in candidates.iter().take(count) {
+            top.push(*v);
+        }
+
+        top
+    }
+
+    fn linear_search(&self, vector: &Vector, count: usize) -> Vec<&Vector> {
+        let mut distances: Vec<(usize, f64)> = self
+            .inner
+            .iter()
+            .enumerate()
+            .map(|(id, v)| (id, self.distance_metric.compute(v, vector)))
+            .collect();
+
+        match self.distance_metric {
             Distance::Euclidean => distances.sort_by(|a, b| a.1.total_cmp(&b.1)),
-            // Dot distance = large => closer
             Distance::Dot => distances.sort_by(|a, b| b.1.total_cmp(&a.1)),
         }
 
-        // 3. return top `count`
-        let top_idx = &distances[0..count];
-        let mut top = Vec::with_capacity(top_idx.len());
-        for (id, _dist) in top_idx {
+        let mut top = Vec::with_capacity(count.min(distances.len()));
+        for (id, _) in distances.iter().take(count) {
             top.push(self.inner.get(*id).unwrap());
         }
-
         top
     }
 }
