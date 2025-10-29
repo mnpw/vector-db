@@ -9,6 +9,7 @@ Toy vector database
 - [x] euclidean  distance
 - [x] benchmark mode
 - [x] inverted file index
+- [ ] python bindings
 - [ ] saving + restoring inverted file index
 - [ ] reduce inverted file index memory overhead
 
