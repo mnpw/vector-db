@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Error;
+use fastembed::{TextEmbedding, TextInitOptions};
 use rand::seq::IndexedRandom;
 
 fn main() {
@@ -276,13 +277,6 @@ fn k_means(
     clusters
 }
 
-struct DB {
-    pub inner: Vec<Vector>,
-    index: Index,
-    dim: usize,
-    distance_metric: Distance,
-}
-
 #[derive(Clone)]
 enum Distance {
     Dot,
@@ -326,6 +320,44 @@ impl Distance {
     }
 }
 
+#[derive(Debug)]
+enum EmbedderOpts {
+    Text(TextEmbedderOpts),
+}
+
+#[derive(Default, Debug)]
+struct TextEmbedderOpts {
+    inner: TextInitOptions,
+}
+
+enum Embedder {
+    Text(TextEmbedding),
+}
+
+impl Embedder {
+    fn embed(&mut self, data: String) -> Vector {
+        let embeddings = match self {
+            Embedder::Text(text_embedding) => text_embedding.embed(vec![data], None).unwrap(),
+        };
+
+        // TODO: optimize this
+        embeddings
+            .first()
+            .unwrap()
+            .to_owned()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+}
+
+struct DB {
+    pub inner: Vec<Vector>,
+    index: Index,
+    dim: usize,
+    distance_metric: Distance,
+}
+
 impl DB {
     fn new(dimension: usize, distance_metric: Distance) -> Self {
         Self {
@@ -334,6 +366,30 @@ impl DB {
             dim: dimension,
             distance_metric,
         }
+    }
+
+    fn new_with_embedder(
+        embedder_opts: EmbedderOpts,
+        distance_metric: Distance,
+    ) -> anyhow::Result<(Self, Embedder)> {
+        let opts = match embedder_opts {
+            EmbedderOpts::Text(text_embedder_opts) => text_embedder_opts.inner,
+        };
+        let model_info = TextEmbedding::get_model_info(&opts.model_name)?;
+        let dim = model_info.dim;
+
+        let model = TextEmbedding::try_new(Default::default())?;
+        let embedder = Embedder::Text(model);
+
+        Ok((
+            Self {
+                inner: vec![],
+                index: Index::new(32),
+                dim,
+                distance_metric,
+            },
+            embedder,
+        ))
     }
 
     fn build_index(&mut self) {
@@ -349,9 +405,10 @@ impl DB {
         self.index.update(&self.inner, &self.distance_metric);
     }
 
-    fn insert(&mut self, vector: Vector) {
+    fn insert(&mut self, vector: Vector) -> Vector {
         assert_eq!(vector.len(), self.dim);
-        self.inner.push(vector);
+        self.inner.push(vector.clone());
+        vector
     }
 
     fn search(&self, vector: &Vector, count: usize) -> Vec<&Vector> {
@@ -433,4 +490,26 @@ fn test_db() {
 
     let result = db.search(&vec![0.2, 0.1, 0.9, 0.7], 1);
     assert_eq!(result, vec![&vec![0.18, 0.01, 0.85, 0.80]]);
+}
+
+#[test]
+fn test_embedding() {
+    let (mut db, mut embedder) =
+        DB::new_with_embedder(EmbedderOpts::Text(Default::default()), Distance::Euclidean).unwrap();
+    let mut embed = |input: &'static str| embedder.embed(input.to_string());
+
+    let mut inputs = Vec::new();
+    inputs.push(("apple", db.insert(embed("apple"))));
+    inputs.push(("banana", db.insert(embed("banana"))));
+    inputs.push(("cat", db.insert(embed("cat"))));
+    inputs.push(("orange", db.insert(embed("orange"))));
+
+    let outputs = db.search(&embed("dog"), 1);
+    let output = outputs.first().unwrap();
+
+    let closest = inputs
+        .iter()
+        .find_map(|(text, vector)| vector.eq(*output).then_some(*text));
+
+    assert_eq!(closest, Some("cat"));
 }
