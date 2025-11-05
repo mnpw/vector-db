@@ -116,19 +116,34 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
     db.build_index();
     println!("Index built!\n");
 
-    // Run queries and calculate metrics
+    // Run queries and measure performance
     println!("Running benchmark queries...");
     let k = 10; // Number of neighbors to retrieve
+
+    // Store results for later recall calculation
+    let mut query_results = Vec::with_capacity(n_test);
+
+    // Time only the actual queries
     let start = std::time::Instant::now();
-
-    let mut correct_at_1 = 0;
-    let mut correct_at_10 = 0;
-
     for i in 0..n_test {
         println!("Test query: [{i}]");
         let query: Vec<f64> = test_data.row(i).iter().map(|&x| x as f64).collect();
         let results = db.search(&query, k);
+        query_results.push(results);
+    }
+    let elapsed = start.elapsed();
 
+    // Calculate performance metrics
+    let qps = n_test as f64 / elapsed.as_secs_f64();
+    let avg_latency_ms = elapsed.as_secs_f64() * 1000.0 / n_test as f64;
+
+    println!("\nCalculating recall metrics...");
+
+    // Calculate recall metrics separately (not timed)
+    let mut correct_at_1 = 0;
+    let mut correct_at_10 = 0;
+
+    for (i, results) in query_results.iter().enumerate() {
         // Get ground truth for this query
         let gt_neighbors: Vec<i32> = neighbors.row(i).iter().take(k).copied().collect();
 
@@ -145,7 +160,7 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
 
         // Check recall@10
         let mut matches = 0;
-        for result in &results {
+        for result in results {
             for (train_idx, train_vec) in db.inner.iter().enumerate() {
                 if train_vec == *result && gt_neighbors.contains(&(train_idx as i32)) {
                     matches += 1;
@@ -156,25 +171,27 @@ fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
         correct_at_10 += matches;
     }
 
-    let elapsed = start.elapsed();
-    let qps = n_test as f64 / elapsed.as_secs_f64();
-    let avg_latency_ms = elapsed.as_secs_f64() * 1000.0 / n_test as f64;
-
     // Print results
-    println!("\nResults");
-    println!("=======");
+    println!("\n========== Benchmark Results ==========");
+
+    println!("\nPerformance Metrics (query execution only):");
+    println!("--------------------------------------------");
+    println!("  Total time:    {:.2} seconds", elapsed.as_secs_f64());
+    println!("  Queries/sec:   {:.0} QPS", qps);
+    println!("  Avg latency:   {:.2} ms/query", avg_latency_ms);
+
+    println!("\nAccuracy Metrics:");
+    println!("-----------------");
     println!(
-        "Recall@1:   {:.2}%",
+        "  Recall@1:      {:.2}%",
         (correct_at_1 as f64 / n_test as f64) * 100.0
     );
     println!(
-        "Recall@10:  {:.2}%",
+        "  Recall@10:     {:.2}%",
         (correct_at_10 as f64 / (n_test * k) as f64) * 100.0
     );
-    println!("\nPerformance:");
-    println!("- Total time: {:.2} seconds", elapsed.as_secs_f64());
-    println!("- QPS: {:.0} queries/second", qps);
-    println!("- Avg latency: {:.2} ms", avg_latency_ms);
+
+    println!("\n========================================");
 
     Ok(())
 }
