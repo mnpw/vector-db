@@ -4,25 +4,57 @@ use std::path::Path;
 use vector_db::{DB, Distance};
 
 use anyhow::Error;
-use fastembed::{TextEmbedding, TextInitOptions};
-use rand::seq::IndexedRandom;
+use clap::{Parser, Subcommand, ValueEnum};
+use hdf5::File as Hdf5File;
+use ndarray::Array2;
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(short, long)]
+    namespace: Option<String>,
+    #[arg(short, long, value_enum)]
+    index: Option<CliIndex>,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum CliIndex {
+    Ivf,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Bench {
+        #[arg(short, long, value_enum)]
+        dataset: BenchDataset,
+    },
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum BenchDataset {
+    /// Fashion-MNIST, 784 dim, Euclidean
+    FashionMnist,
+}
+
+impl BenchDataset {
+    fn path(&self) -> &'static str {
+        match self {
+            BenchDataset::FashionMnist => "fashion-mnist-784-euclidean.hdf5",
+        }
+    }
+}
 
 fn main() {
-    println!("Fashion-MNIST Benchmark");
-    println!("========================\n");
+    let cli = Cli::parse();
 
-    // Download dataset if needed
-    let dataset = "fashion-mnist-784-euclidean.hdf5";
-    if !Path::new(dataset).exists() {
-        println!("Downloading Fashion-MNIST dataset...");
-        download_dataset(dataset, dataset).expect("Failed to download dataset");
-        println!("Download complete!\n");
-    } else {
-        println!("Dataset already exists, skipping download.\n");
-    }
-
-    // Run benchmark
-    run_benchmark(dataset).expect("Benchmark failed");
+    match cli.command {
+        Commands::Bench { dataset, .. } => {
+            if let Err(e) = run_benchmark(dataset.path()) {
+                println!("Benchmark failed to run: {e:?}")
+            }
+        }
+    };
 }
 
 fn download_dataset(dataset_name: &str, download_path: &str) -> Result<(), Error> {
@@ -35,11 +67,20 @@ fn download_dataset(dataset_name: &str, download_path: &str) -> Result<(), Error
 }
 
 fn run_benchmark(dataset_path: &str) -> Result<(), Error> {
-    use hdf5::File;
-    use ndarray::Array2;
+    println!("Running Benchmark");
+    println!("========================\n");
+
+    // Download dataset if needed
+    if !Path::new(dataset_path).exists() {
+        println!("Downloading {} dataset...", dataset_path);
+        download_dataset(dataset_path, dataset_path).expect("Failed to download dataset");
+        println!("Download complete!\n");
+    } else {
+        println!("Dataset already exists, skipping download.\n");
+    }
 
     println!("Loading dataset from HDF5 file...");
-    let file = File::open(dataset_path)?;
+    let file = Hdf5File::open(dataset_path)?;
 
     // Read training vectors
     let train_dataset = file.dataset("train")?;
