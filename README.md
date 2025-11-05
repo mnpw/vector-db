@@ -11,10 +11,10 @@ Toy vector database
 - [x] inverted file index
 - [x] embedder for data insert
 - [ ] namespaces
-- [ ] cli
+- [ ] interactive cli (readline)
 - [ ] HSNW index
 - [ ] index visualization
-- [ ] saving + restoring inverted file index
+- [ ] persistence (saving database/index to disk)
 - [ ] reduce inverted file index memory overhead
 - [ ] python bindings
 
