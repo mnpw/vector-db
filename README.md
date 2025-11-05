@@ -2,7 +2,14 @@
 
 Toy vector database
 
-## TODO
+## quickstart
+
+```
+cargo build --release
+./target/release/vector-db bench -d fashion-mnist -s 1000
+```
+
+## todo
 
 - [x] insert vector
 - [x] dot product distance
@@ -19,7 +26,7 @@ Toy vector database
 - [ ] python bindings
 
 
-## Perf changelog
+## perf changelog
 
 ### 5 nov 25
 ```
